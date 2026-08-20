@@ -1,0 +1,19 @@
+{
+  "Dns": {
+    "Zone": "exemple.com",
+    "ServerName": "localhost"
+  },
+  "Auth": {
+    "HeaderName": "X-API-Key"
+  },
+  "Sophos": {
+    "ApiUrl": "https://172.16.16.16:4444/webconsole/APIController",
+    "Username": "",
+    "Password": "",
+    "CertificateThumbprint": ""
+  },
+  "ApiKeys": {},
+  "Logging": {
+    "LogLevel": { "Default": "Information" }
+  }
+}

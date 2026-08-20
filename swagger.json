@@ -1,0 +1,247 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "DnsWeaver Webhook API",
+    "description": "Webhook backend used by dnsweaver. Each X-API-Key determines the actual server-side behavior (Mode): either a DNS write to a Windows DNS server through WMI (root\\MicrosoftDNS), or adding/removing a domain from a Sophos Firewall WAF rule list. The JSON contract is identical in both cases, and dnsweaver does not know which backend action is actually being performed.",
+    "version": "2.0.0"
+  },
+  "servers": [
+    { "url": "https://api.forgelab.me:5001/DnsWeaver", "description": "Production" }
+  ],
+  "security": [
+    { "ApiKeyAuth": [] }
+  ],
+  "paths": {
+    "/{instance}/ping": {
+      "parameters": [ { "$ref": "#/components/parameters/InstanceParam" } ],
+      "get": {
+        "summary": "Health check",
+        "operationId": "ping",
+        "responses": {
+          "200": { "description": "Service is operational" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/{instance}/list": {
+      "parameters": [ { "$ref": "#/components/parameters/InstanceParam" } ],
+      "get": {
+        "summary": "List the current state managed by this key: DNS records in the zone (Dns mode), or domains in the targeted WAF rule (Sophos mode)",
+        "operationId": "listRecords",
+        "responses": {
+          "200": {
+            "description": "List of records, used by dnsweaver for drift detection and cleanup",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/RecordResponse" }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/{instance}/create": {
+      "parameters": [ { "$ref": "#/components/parameters/InstanceParam" } ],
+      "post": {
+        "summary": "Create a DNS record (Dns mode) or add a domain to the targeted WAF rule (Sophos mode)",
+        "operationId": "createRecord",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RecordRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Created, or already present in idempotent Sophos mode" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/{instance}/update": {
+      "parameters": [ { "$ref": "#/components/parameters/InstanceParam" } ],
+      "put": {
+        "summary": "Update an existing DNS record (Dns mode); in Sophos mode this is an idempotent add because domain lists have no real update operation",
+        "operationId": "updateRecord",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/{instance}/delete": {
+      "parameters": [ { "$ref": "#/components/parameters/InstanceParam" } ],
+      "delete": {
+        "summary": "Delete a DNS record (Dns mode) or remove a domain from the targeted WAF rule (Sophos mode)",
+        "operationId": "deleteRecord",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DeleteRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Deleted, or already absent in an idempotent operation" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "Determines both authentication and the server-side Mode (Dns or Sophos), as well as the targeted WAF rule in Sophos mode. See ApiKeys in appsettings.Secrets.json."
+      }
+    },
+    "parameters": {
+      "InstanceParam": {
+        "name": "instance",
+        "in": "path",
+        "required": true,
+        "description": "Arbitrary label, never read by the server. Its only purpose is to give each dnsweaver provider instance a distinct URL endpoint: dnsweaver deduplicates webhook backends by Type+Endpoint, so multiple instances pointing to the same URL would otherwise be treated as a single backend and only one would actually write.",
+        "schema": { "type": "string" },
+        "example": "dns"
+      }
+    },
+    "schemas": {
+      "RecordType": {
+        "type": "string",
+        "enum": ["A", "AAAA", "CNAME", "TXT", "SRV"]
+      },
+      "SrvData": {
+        "type": "object",
+        "required": ["priority", "weight", "port"],
+        "properties": {
+          "priority": { "type": "integer", "minimum": 0, "maximum": 65535 },
+          "weight": { "type": "integer", "minimum": 0, "maximum": 65535 },
+          "port": { "type": "integer", "minimum": 0, "maximum": 65535 }
+        }
+      },
+      "RecordRequest": {
+        "type": "object",
+        "required": ["hostname", "type", "value", "ttl"],
+        "properties": {
+          "hostname": { "type": "string", "example": "app.forgelab.me" },
+          "type": { "$ref": "#/components/schemas/RecordType" },
+          "value": { "type": "string", "example": "10.0.0.99" },
+          "ttl": { "type": "integer", "example": 300 },
+          "srv": {
+            "allOf": [{ "$ref": "#/components/schemas/SrvData" }],
+            "nullable": true
+          }
+        }
+      },
+      "UpdateRequest": {
+        "type": "object",
+        "description": "The old_value, new_value, and old_srv fields use snake_case. This is the only payload that does not follow the API's global camelCase convention, in order to match dnsweaver's webhook client exactly.",
+        "required": ["hostname", "type", "old_value", "new_value", "ttl"],
+        "properties": {
+          "hostname": { "type": "string", "example": "app.forgelab.me" },
+          "type": { "$ref": "#/components/schemas/RecordType" },
+          "old_value": { "type": "string", "example": "10.0.0.98" },
+          "new_value": { "type": "string", "example": "10.0.0.99" },
+          "ttl": { "type": "integer", "example": 300 },
+          "srv": {
+            "allOf": [{ "$ref": "#/components/schemas/SrvData" }],
+            "nullable": true
+          },
+          "old_srv": {
+            "allOf": [{ "$ref": "#/components/schemas/SrvData" }],
+            "nullable": true
+          }
+        }
+      },
+      "RecordResponse": {
+        "type": "object",
+        "properties": {
+          "hostname": { "type": "string" },
+          "type": { "$ref": "#/components/schemas/RecordType" },
+          "value": {
+            "type": "string",
+            "nullable": true,
+            "description": "In Sophos mode, this is not a real DNS target. It is either the last value received through create or update for this hostname, the live-resolved backend IP of the rule, or the rule name as a last resort."
+          },
+          "ttl": { "type": "integer" },
+          "srv": {
+            "allOf": [{ "$ref": "#/components/schemas/SrvData" }],
+            "nullable": true
+          }
+        }
+      },
+      "DeleteRequest": {
+        "type": "object",
+        "required": ["hostname"],
+        "properties": {
+          "hostname": { "type": "string", "example": "app.forgelab.me" },
+          "type": {
+            "allOf": [{ "$ref": "#/components/schemas/RecordType" }],
+            "nullable": true,
+            "description": "Required in Dns mode, where it determines the WMI record class to query; ignored in Sophos mode."
+          }
+        }
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "title": { "type": "string" },
+          "status": { "type": "integer" },
+          "detail": { "type": "string" },
+          "instance": { "type": "string" }
+        }
+      },
+      "ValidationError": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string" }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid API key"
+      },
+      "BadRequest": {
+        "description": "Invalid or out-of-zone hostname, or unsupported record type",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ValidationError" }
+          }
+        }
+      },
+      "ServerError": {
+        "description": "Unhandled server error from WMI or Sophos connectivity/response handling",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ProblemDetails" }
+          }
+        }
+      }
+    }
+  }
+}

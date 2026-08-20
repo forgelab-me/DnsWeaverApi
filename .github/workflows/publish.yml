@@ -1,0 +1,54 @@
+name: Release on Tag
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-publish-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore DnsWeaverApi.csproj
+
+      - name: Build
+        run: dotnet build DnsWeaverApi.csproj --configuration Release --no-restore
+
+      - name: Publish
+        run: dotnet publish DnsWeaverApi.csproj --configuration Release --no-build --output artifacts/publish
+
+      - name: Create release archive
+        id: archive
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $zipName = "DnsWeaverApi-$tag-publish.zip"
+          Compress-Archive -Path artifacts/publish/* -DestinationPath "artifacts/$zipName" -Force
+          "zip_name=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-zip
+          path: artifacts/${{ steps.archive.outputs.zip_name }}
+
+      - name: Create GitHub release and upload zip
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/${{ steps.archive.outputs.zip_name }}
