@@ -24,6 +24,51 @@ public static class RecordEndpoints
 
         group.MapGet("/ping", () => Results.Ok());
 
+        group.MapGet("/health", async (HttpContext ctx, DnsWmiScopeProvider scopeProvider, SophosClient sophos, BackgroundTaskQueue queue, ILogger<Marker> logger) =>
+        {
+            var route = (ApiKeyRoute)ctx.Items["Route"]!;
+            var healthy = true;
+            var checks = new Dictionary<string, string>
+            {
+                ["queueDepth"] = queue.ApproximateCount.ToString()
+            };
+
+            if (IsSophosMode(route))
+            {
+                try
+                {
+                    var rule = await sophos.GetFirewallRuleAsync(route.SophosRuleName!);
+                    checks["sophos"] = rule is not null ? "ok" : "rule-not-found";
+                    healthy &= rule is not null;
+                }
+                catch (Exception ex) when (ex is HttpRequestException or SophosOperationException or XmlException)
+                {
+                    logger.LogWarning(ex, "Health check: Sophos unreachable");
+                    checks["sophos"] = "unreachable";
+                    healthy = false;
+                }
+            }
+            else
+            {
+                try
+                {
+                    var scope = scopeProvider.GetScope();
+                    checks["wmi"] = scope.IsConnected ? "ok" : "disconnected";
+                    healthy &= scope.IsConnected;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Health check: WMI unreachable");
+                    checks["wmi"] = "unreachable";
+                    healthy = false;
+                }
+            }
+
+            return healthy
+                ? Results.Ok(checks)
+                : Results.Json(checks, statusCode: StatusCodes.Status503ServiceUnavailable);
+        });
+
         group.MapGet("/list", async (HttpContext ctx, DnsRecordService dns, SophosClient sophos, SophosDomainStateStore sophosState, ILogger<Marker> logger) =>
         {
             var route = (ApiKeyRoute)ctx.Items["Route"]!;
@@ -71,7 +116,7 @@ public static class RecordEndpoints
                 // than the API manager's client timeout. Do the real work after
                 // the response is already sent; dnsweaver's minute-scale reconcile
                 // loop will see it land on the next /list either way.
-                var accepted = queue.TryEnqueue(async _ =>
+                var accepted = queue.TryEnqueue($"create {hostname} on {ruleName}", async _ =>
                 {
                     await sophos.AddDomainAsync(ruleName, hostname, groupName);
                     sophosState.Remember(ruleName, hostname, value);
@@ -107,7 +152,7 @@ public static class RecordEndpoints
                 var hostname = body.Hostname;
                 var newValue = body.NewValue;
                 // No meaningful "update" for list membership — adding is idempotent.
-                var accepted = queue.TryEnqueue(async _ =>
+                var accepted = queue.TryEnqueue($"update {hostname} on {ruleName}", async _ =>
                 {
                     await sophos.AddDomainAsync(ruleName, hostname, groupName);
                     sophosState.Remember(ruleName, hostname, newValue);
@@ -141,7 +186,7 @@ public static class RecordEndpoints
                 var ruleName = route.SophosRuleName!;
                 var groupName = route.SophosGroupName;
                 var hostname = body.Hostname;
-                var accepted = queue.TryEnqueue(async _ =>
+                var accepted = queue.TryEnqueue($"delete {hostname} on {ruleName}", async _ =>
                 {
                     await sophos.RemoveDomainAsync(ruleName, hostname, groupName);
                     sophosState.Forget(ruleName, hostname);

@@ -76,6 +76,33 @@ GET /dns/ping
 X-API-Key: your-api-key
 ```
 
+## Health
+
+```http
+GET /dns/health
+X-API-Key: your-api-key
+```
+
+Example response, `Dns` mode key:
+
+```json
+{
+  "wmi": "ok",
+  "queueDepth": "0"
+}
+```
+
+Example response, `Sophos` mode key:
+
+```json
+{
+  "sophos": "ok",
+  "queueDepth": "0"
+}
+```
+
+Returns `503` with the same shape (value `"disconnected"`, `"unreachable"`, or `"rule-not-found"` instead of `"ok"`) when the backend for that key isn't reachable.
+
 ## List records
 
 ```http

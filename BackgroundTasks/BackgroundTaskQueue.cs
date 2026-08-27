@@ -3,6 +3,13 @@ using System.Threading.Channels;
 namespace DnsWeaverApi.BackgroundTasks;
 
 /// <summary>
+/// A queued unit of work plus a human-readable description, so
+/// QueuedHostedService can log a meaningful line on success or failure
+/// instead of a generic "task completed".
+/// </summary>
+public record QueuedWorkItem(string Description, Func<CancellationToken, Task> Work);
+
+/// <summary>
 /// Lets request handlers hand off slow work (Sophos WAF rule updates routinely
 /// take 30-90s to apply, longer than the API manager's client-side timeout) to
 /// run after the HTTP response has already been sent. All services referenced
@@ -21,13 +28,20 @@ public class BackgroundTaskQueue
 {
     private const int Capacity = 500;
 
-    private readonly Channel<Func<CancellationToken, Task>> _channel =
-        Channel.CreateBounded<Func<CancellationToken, Task>>(
+    private readonly Channel<QueuedWorkItem> _channel =
+        Channel.CreateBounded<QueuedWorkItem>(
             new BoundedChannelOptions(Capacity) { FullMode = BoundedChannelFullMode.Wait });
 
-    public bool TryEnqueue(Func<CancellationToken, Task> workItem) =>
-        _channel.Writer.TryWrite(workItem);
+    public bool TryEnqueue(string description, Func<CancellationToken, Task> work) =>
+        _channel.Writer.TryWrite(new QueuedWorkItem(description, work));
 
-    public IAsyncEnumerable<Func<CancellationToken, Task>> ReadAllAsync(CancellationToken ct) =>
+    public IAsyncEnumerable<QueuedWorkItem> ReadAllAsync(CancellationToken ct) =>
         _channel.Reader.ReadAllAsync(ct);
+
+    /// <summary>
+    /// Number of work items currently waiting to run. -1 if the underlying
+    /// channel implementation doesn't support counting (not expected for the
+    /// built-in bounded channel used here, but guarded defensively).
+    /// </summary>
+    public int ApproximateCount => _channel.Reader.CanCount ? _channel.Reader.Count : -1;
 }

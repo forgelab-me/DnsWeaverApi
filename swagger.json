@@ -3,7 +3,7 @@
   "info": {
     "title": "DnsWeaver Webhook API",
     "description": "Webhook backend used by dnsweaver. Each X-API-Key determines the actual server-side behavior (Mode): either a DNS write to a Windows DNS server through WMI (root\\MicrosoftDNS), or adding/removing a domain from a Sophos Firewall WAF rule list. The JSON contract is identical in both cases, and dnsweaver does not know which backend action is actually being performed.",
-    "version": "2.0.0"
+    "version": "1.1.0"
   },
   "servers": [
     { "url": "https://api.forgelab.me:5001/DnsWeaver", "description": "Production" }
@@ -20,6 +20,32 @@
         "responses": {
           "200": { "description": "Service is operational" },
           "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/{instance}/health": {
+      "parameters": [ { "$ref": "#/components/parameters/InstanceParam" } ],
+      "get": {
+        "summary": "Reports whether the backend this key routes to is actually reachable — WMI connectivity in Dns mode, or the targeted WAF rule's existence in Sophos mode — plus the current background queue depth",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Healthy",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthCheckResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": {
+            "description": "Degraded — WMI unreachable/disconnected in Dns mode, or the targeted Sophos rule unreachable/not found in Sophos mode",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthCheckResponse" }
+              }
+            }
+          }
         }
       }
     },
@@ -62,7 +88,8 @@
           "201": { "description": "Created, or already present in idempotent Sophos mode" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "500": { "$ref": "#/components/responses/ServerError" }
+          "500": { "$ref": "#/components/responses/ServerError" },
+          "503": { "$ref": "#/components/responses/QueueSaturated" }
         }
       }
     },
@@ -83,7 +110,8 @@
           "200": { "description": "Updated" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "500": { "$ref": "#/components/responses/ServerError" }
+          "500": { "$ref": "#/components/responses/ServerError" },
+          "503": { "$ref": "#/components/responses/QueueSaturated" }
         }
       }
     },
@@ -104,7 +132,8 @@
           "200": { "description": "Deleted, or already absent in an idempotent operation" },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "500": { "$ref": "#/components/responses/ServerError" }
+          "500": { "$ref": "#/components/responses/ServerError" },
+          "503": { "$ref": "#/components/responses/QueueSaturated" }
         }
       }
     }
@@ -205,6 +234,15 @@
           }
         }
       },
+      "HealthCheckResponse": {
+        "type": "object",
+        "description": "Keys present depend on the key's Mode: 'wmi' in Dns mode, 'sophos' in Sophos mode. 'queueDepth' is always present.",
+        "properties": {
+          "wmi": { "type": "string", "enum": ["ok", "disconnected", "unreachable"] },
+          "sophos": { "type": "string", "enum": ["ok", "rule-not-found", "unreachable"] },
+          "queueDepth": { "type": "string", "example": "0" }
+        }
+      },
       "ProblemDetails": {
         "type": "object",
         "properties": {
@@ -236,6 +274,14 @@
       },
       "ServerError": {
         "description": "Unhandled server error from WMI or Sophos connectivity/response handling",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ProblemDetails" }
+          }
+        }
+      },
+      "QueueSaturated": {
+        "description": "Sophos mode only: the background task queue (bounded at 500 pending items) is full, most likely because Sophos has been unreachable for an extended period. Retry later — dnsweaver's own reconcile loop will also retry automatically.",
         "content": {
           "application/json": {
             "schema": { "$ref": "#/components/schemas/ProblemDetails" }

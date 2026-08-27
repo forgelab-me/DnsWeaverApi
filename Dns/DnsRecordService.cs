@@ -21,12 +21,12 @@ public class DnsRecordService
         ["SRV"] = "MicrosoftDNS_SRVType",
     };
 
-    private readonly ManagementScope _scope;
+    private readonly DnsWmiScopeProvider _scopeProvider;
     private readonly DnsOptions _options;
 
-    public DnsRecordService(ManagementScope scope, DnsOptions options)
+    public DnsRecordService(DnsWmiScopeProvider scopeProvider, DnsOptions options)
     {
-        _scope = scope;
+        _scopeProvider = scopeProvider;
         _options = options;
     }
 
@@ -36,93 +36,93 @@ public class DnsRecordService
 
     public IReadOnlyList<object> List()
     {
-        var records = new List<object>();
-        foreach (var (type, wmiClass) in WmiClassByType)
+        return ExecuteWmi(scope =>
         {
-            using var searcher = new ManagementObjectSearcher(_scope,
-                new ObjectQuery($"SELECT * FROM {wmiClass} WHERE ContainerName='{WqlEscape(_options.Zone)}'"));
-
-            ManagementObjectCollection results;
-            try
+            var records = new List<object>();
+            foreach (var (type, wmiClass) in WmiClassByType)
             {
-                results = searcher.Get();
-            }
-            catch (ManagementException ex)
-            {
-                throw new WmiOperationException($"WMI error listing {type} records: {ex.Message} ({ex.ErrorCode})");
-            }
-
-            foreach (ManagementObject rr in results)
-            {
-                var owner = (string)rr["OwnerName"];
-                var ttl = (uint)rr["TTL"];
-                object? entry = type switch
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery($"SELECT * FROM {wmiClass} WHERE ContainerName='{WqlEscape(_options.Zone)}'"));
+                foreach (ManagementObject rr in searcher.Get())
                 {
-                    "A" => new { hostname = owner, type, value = (string)rr["IPAddress"], ttl },
-                    "AAAA" => new { hostname = owner, type, value = (string)rr["IPv6Address"], ttl },
-                    "CNAME" => new { hostname = owner, type, value = (string)rr["PrimaryName"], ttl },
-                    "TXT" => new { hostname = owner, type, value = (string)rr["DescriptiveText"], ttl },
-                    "SRV" => new
+                    var owner = (string)rr["OwnerName"];
+                    var ttl = (uint)rr["TTL"];
+                    object? entry = type switch
                     {
-                        hostname = owner,
-                        type,
-                        value = (string)rr["SRVDomainName"],
-                        ttl,
-                        srv = new { priority = (ushort)rr["Priority"], weight = (ushort)rr["Weight"], port = (ushort)rr["Port"] }
-                    },
-                    _ => null
-                };
-                if (entry is not null) records.Add(entry);
-                rr.Dispose();
+                        "A" => new { hostname = owner, type, value = (string)rr["IPAddress"], ttl },
+                        "AAAA" => new { hostname = owner, type, value = (string)rr["IPv6Address"], ttl },
+                        "CNAME" => new { hostname = owner, type, value = (string)rr["PrimaryName"], ttl },
+                        "TXT" => new { hostname = owner, type, value = (string)rr["DescriptiveText"], ttl },
+                        "SRV" => new
+                        {
+                            hostname = owner,
+                            type,
+                            value = (string)rr["SRVDomainName"],
+                            ttl,
+                            srv = new { priority = (ushort)rr["Priority"], weight = (ushort)rr["Weight"], port = (ushort)rr["Port"] }
+                        },
+                        _ => null
+                    };
+                    if (entry is not null) records.Add(entry);
+                    rr.Dispose();
+                }
             }
-        }
-        return records;
+            return (IReadOnlyList<object>)records;
+        }, "listing records");
     }
 
     public void Create(RecordRequest body)
     {
         var wmiClass = WmiClassByType[body.Type];
-
-        using var mc = new ManagementClass(_scope, new ManagementPath(wmiClass), null);
-        using var inParams = mc.GetMethodParameters("CreateInstanceFromPropertyData");
-        inParams["DnsServerName"] = _options.ServerName;
-        inParams["ContainerName"] = _options.Zone;
-        inParams["OwnerName"] = body.Hostname;
-        inParams["TTL"] = (uint)body.Ttl;
-        ApplyValue(inParams, body.Type, body.Value, body.Srv);
-
-        Invoke(mc, inParams);
+        ExecuteWmi<object?>(scope =>
+        {
+            using var mc = new ManagementClass(scope, new ManagementPath(wmiClass), null);
+            using var inParams = mc.GetMethodParameters("CreateInstanceFromPropertyData");
+            inParams["DnsServerName"] = _options.ServerName;
+            inParams["ContainerName"] = _options.Zone;
+            inParams["OwnerName"] = body.Hostname;
+            inParams["TTL"] = (uint)body.Ttl;
+            ApplyValue(inParams, body.Type, body.Value, body.Srv);
+            mc.InvokeMethod("CreateInstanceFromPropertyData", inParams, null);
+            return null;
+        }, "creating record");
     }
 
     public void Update(UpdateRequest body)
     {
         var wmiClass = WmiClassByType[body.Type];
+        ExecuteWmi<object?>(scope =>
+        {
+            // Read-modify-write isn't available generically across the 5 WMI record
+            // types without per-type Modify() signatures — delete+recreate is simpler
+            // and behaviorally equivalent for our purposes.
+            DeleteExisting(scope, wmiClass, body.Hostname);
 
-        // Read-modify-write isn't available generically across the 5 WMI record
-        // types without per-type Modify() signatures — delete+recreate is simpler
-        // and behaviorally equivalent for our purposes.
-        DeleteExisting(wmiClass, body.Hostname);
-
-        using var mc = new ManagementClass(_scope, new ManagementPath(wmiClass), null);
-        using var inParams = mc.GetMethodParameters("CreateInstanceFromPropertyData");
-        inParams["DnsServerName"] = _options.ServerName;
-        inParams["ContainerName"] = _options.Zone;
-        inParams["OwnerName"] = body.Hostname;
-        inParams["TTL"] = (uint)body.Ttl;
-        ApplyValue(inParams, body.Type, body.NewValue, body.Srv);
-
-        Invoke(mc, inParams);
+            using var mc = new ManagementClass(scope, new ManagementPath(wmiClass), null);
+            using var inParams = mc.GetMethodParameters("CreateInstanceFromPropertyData");
+            inParams["DnsServerName"] = _options.ServerName;
+            inParams["ContainerName"] = _options.Zone;
+            inParams["OwnerName"] = body.Hostname;
+            inParams["TTL"] = (uint)body.Ttl;
+            ApplyValue(inParams, body.Type, body.NewValue, body.Srv);
+            mc.InvokeMethod("CreateInstanceFromPropertyData", inParams, null);
+            return null;
+        }, "updating record");
     }
 
     public void Delete(DeleteRequest body)
     {
         var wmiClass = WmiClassByType[body.Type!];
-        DeleteExisting(wmiClass, body.Hostname);
+        ExecuteWmi<object?>(scope =>
+        {
+            DeleteExisting(scope, wmiClass, body.Hostname);
+            return null;
+        }, "deleting record");
     }
 
-    private void DeleteExisting(string wmiClass, string hostname)
+    private void DeleteExisting(ManagementScope scope, string wmiClass, string hostname)
     {
-        using var searcher = new ManagementObjectSearcher(_scope,
+        using var searcher = new ManagementObjectSearcher(scope,
             new ObjectQuery($"SELECT * FROM {wmiClass} WHERE OwnerName='{WqlEscape(hostname)}' AND ContainerName='{WqlEscape(_options.Zone)}'"));
         foreach (ManagementObject rr in searcher.Get())
         {
@@ -149,15 +149,29 @@ public class DnsRecordService
         }
     }
 
-    private static void Invoke(ManagementClass mc, ManagementBaseObject inParams)
+    /// <summary>
+    /// Runs a WMI operation against the current scope. On ManagementException,
+    /// forces a fresh reconnect and retries exactly once before giving up —
+    /// covers a WMI session that went stale (DNS server restart, network blip)
+    /// without IsConnected having noticed yet, so a transient outage doesn't
+    /// require an App Pool recycle to recover from.
+    /// </summary>
+    private T ExecuteWmi<T>(Func<ManagementScope, T> operation, string context)
     {
         try
         {
-            mc.InvokeMethod("CreateInstanceFromPropertyData", inParams, null);
+            return operation(_scopeProvider.GetScope());
         }
-        catch (ManagementException ex)
+        catch (ManagementException)
         {
-            throw new WmiOperationException($"WMI error: {ex.Message} ({ex.ErrorCode})");
+            try
+            {
+                return operation(_scopeProvider.Reconnect());
+            }
+            catch (ManagementException ex)
+            {
+                throw new WmiOperationException($"WMI error {context}: {ex.Message} ({ex.ErrorCode})");
+            }
         }
     }
 }

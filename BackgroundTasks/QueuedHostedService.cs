@@ -13,18 +13,21 @@ public class QueuedHostedService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var workItem in _queue.ReadAllAsync(stoppingToken))
+        await foreach (var item in _queue.ReadAllAsync(stoppingToken))
         {
             try
             {
-                await workItem(stoppingToken);
+                await item.Work(stoppingToken);
+                // The only confirmation a queued write actually happened — there's
+                // no HTTP caller left to report success to by this point.
+                _logger.LogInformation("Background operation succeeded: {Description}", item.Description);
             }
             catch (Exception ex)
             {
                 // No HTTP caller left to report to by the time this runs —
                 // this log is the only signal of a failure. Check it if a
                 // Sophos domain doesn't show up after the next reconcile cycle.
-                _logger.LogError(ex, "Background Sophos operation failed");
+                _logger.LogError(ex, "Background operation failed: {Description}", item.Description);
             }
         }
     }

@@ -4,9 +4,18 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="System.Management" Version="10.0.11" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- DnsWeaverApi.Tests lives under this project's own directory — without
+         this, the SDK's default file glob (**/*.cs) pulls its test files into
+         this project's own compilation too. -->
+    <Compile Remove="DnsWeaverApi.Tests\**" />
+    <Content Remove="DnsWeaverApi.Tests\**" />
+    <EmbeddedResource Remove="DnsWeaverApi.Tests\**" />
+    <None Remove="DnsWeaverApi.Tests\**" />
   </ItemGroup>
 </Project>

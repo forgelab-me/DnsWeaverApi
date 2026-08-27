@@ -1,5 +1,7 @@
 # DnsWeaverApi
 
+[![CI](https://github.com/forgelab-me/DnsWeaverApi/actions/workflows/ci.yml/badge.svg)](https://github.com/forgelab-me/DnsWeaverApi/actions/workflows/ci.yml)
+
 ASP.NET Core webhook API that acts as a bridge between dnsweaver, a Windows DNS server, and Sophos WAF rules.
 
 ## Purpose
@@ -15,9 +17,12 @@ This keeps a single webhook backend on the dnsweaver side while delegating the a
 
 - API key authentication with per-instance routing
 - `list`, `create`, `update`, and `delete` operations across multiple DNS record types
-- Sophos rule support with a background queue to absorb slow operations
+- Sophos rule support with a bounded background queue to absorb slow operations, without accepting work it can't eventually run
+- automatic WMI reconnection if the DNS server restarts or a network blip drops the connection
+- a `health` endpoint reporting live backend reachability (WMI or Sophos) and background queue depth
 - strict hostname validation within the allowed zone
 - OpenAPI specification maintained in [swagger.json](swagger.json)
+- automated test suite and CI (see [Testing](#testing))
 
 ## Requirements
 
@@ -65,21 +70,36 @@ dotnet run
 
 Local launch profiles are defined in [Properties/launchSettings.json](Properties/launchSettings.json).
 
+## Testing
+
+```powershell
+dotnet test
+```
+
+`DnsWeaverApi.Tests` (xUnit) covers `HostnameValidator`, `SecureCompare`, `SophosDomainStateStore`, `BackgroundTaskQueue`, and `SophosClient` — the last one against a fake `HttpMessageHandler` returning canned Sophos XML responses, so it runs without a real firewall.
+
+`DnsRecordService` itself is not unit-tested beyond `IsSupportedType`: it talks to a real Windows DNS server over WMI (`root\MicrosoftDNS`), and `DnsWmiScopeProvider` connects on construction, so exercising it meaningfully needs an actual DNS server rather than a mock. It's verified manually against a real server instead.
+
+CI (`.github/workflows/ci.yml`) runs `dotnet build` and `dotnet test` on every push and pull request to `main`.
+
 ## Releases
 
-Pushing a Git tag matching `v*` triggers the GitHub Actions workflow in [.github/workflows/release-on-tag.yml](.github/workflows/release-on-tag.yml). It builds the project in `Release`, runs `dotnet publish`, creates a zip from the publish output, uploads it as a workflow artifact, and attaches the same zip to a GitHub Release.
+Pushing a Git tag matching `v*` triggers the GitHub Actions workflow in [.github/workflows/publish.yml](.github/workflows/publish.yml). It builds the project in `Release`, runs `dotnet publish`, creates a zip from the publish output, uploads it as a workflow artifact, and attaches the same zip to a GitHub Release.
 
 ## Endpoints
 
 All endpoints are exposed under `/{instance}`:
 
 - `GET /{instance}/ping`
+- `GET /{instance}/health`
 - `GET /{instance}/list`
 - `POST /{instance}/create`
 - `PUT /{instance}/update`
 - `DELETE /{instance}/delete`
 
 The `instance` segment exists only to give each dnsweaver provider a distinct URL. Real routing depends on the API key, not on that path value.
+
+`health` reports the reachability of whatever backend the key actually routes to — WMI connectivity in `Dns` mode, or the targeted rule's existence in `Sophos` mode — plus the current background queue depth. It returns `503` when degraded.
 
 ## Project structure
 
@@ -90,6 +110,7 @@ The `instance` segment exists only to give each dnsweaver provider a distinct UR
 - [Security/](Security): API key authentication middleware
 - [BackgroundTasks/](BackgroundTasks): queue and worker for asynchronous operations
 - [Configuration/](Configuration) and [Models/](Models): options and DTOs
+- [DnsWeaverApi.Tests/](DnsWeaverApi.Tests): xUnit test suite (see [Testing](#testing))
 
 ## API contract
 

@@ -1,4 +1,3 @@
-using System.Management;
 using System.Security.Cryptography;
 using DnsWeaverApi.BackgroundTasks;
 using DnsWeaverApi.Configuration;
@@ -33,9 +32,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sophosOptions);
         services.AddSingleton<IReadOnlyDictionary<string, ApiKeyRoute>>(apiKeys);
 
-        var scope = new ManagementScope($@"\\{dnsOptions.ServerName}\root\MicrosoftDNS");
-        scope.Connect();
-        services.AddSingleton(scope);
+        services.AddSingleton<DnsWmiScopeProvider>();
 
         services.AddSingleton<HostnameValidator>();
         services.AddSingleton<DnsRecordService>();

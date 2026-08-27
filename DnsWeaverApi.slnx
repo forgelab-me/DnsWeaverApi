@@ -1,3 +1,4 @@
 <Solution>
   <Project Path="DnsWeaverApi.csproj" />
+  <Project Path="DnsWeaverApi.Tests\DnsWeaverApi.Tests.csproj" />
 </Solution>
