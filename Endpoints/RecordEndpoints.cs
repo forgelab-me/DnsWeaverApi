@@ -116,7 +116,7 @@ public static class RecordEndpoints
                 // than the API manager's client timeout. Do the real work after
                 // the response is already sent; dnsweaver's minute-scale reconcile
                 // loop will see it land on the next /list either way.
-                var accepted = queue.TryEnqueue($"create {hostname} on {ruleName}", async _ =>
+                var accepted = queue.TryEnqueue($"create {SanitizeForLog(hostname)} on {ruleName}", async _ =>
                 {
                     await sophos.AddDomainAsync(ruleName, hostname, groupName);
                     sophosState.Remember(ruleName, hostname, value);
@@ -152,7 +152,7 @@ public static class RecordEndpoints
                 var hostname = body.Hostname;
                 var newValue = body.NewValue;
                 // No meaningful "update" for list membership — adding is idempotent.
-                var accepted = queue.TryEnqueue($"update {hostname} on {ruleName}", async _ =>
+                var accepted = queue.TryEnqueue($"update {SanitizeForLog(hostname)} on {ruleName}", async _ =>
                 {
                     await sophos.AddDomainAsync(ruleName, hostname, groupName);
                     sophosState.Remember(ruleName, hostname, newValue);
@@ -186,7 +186,7 @@ public static class RecordEndpoints
                 var ruleName = route.SophosRuleName!;
                 var groupName = route.SophosGroupName;
                 var hostname = body.Hostname;
-                var accepted = queue.TryEnqueue($"delete {hostname} on {ruleName}", async _ =>
+                var accepted = queue.TryEnqueue($"delete {SanitizeForLog(hostname)} on {ruleName}", async _ =>
                 {
                     await sophos.RemoveDomainAsync(ruleName, hostname, groupName);
                     sophosState.Forget(ruleName, hostname);
@@ -213,6 +213,15 @@ public static class RecordEndpoints
 
     private static IResult BadRequest(string message) => Results.BadRequest(new { error = message });
 
+    // Hostname is validated to [A-Za-z0-9_.-] before any of these call sites run
+    // (HostnameValidator), so CR/LF can't actually reach here today — but that's
+    // a boolean gate elsewhere in the code, not a transformation static analysis
+    // can see as a sanitizer at this sink. Strip newlines explicitly right before
+    // logging so a log line can't be forged (CodeQL cs/log-forging) even if the
+    // validation rule ever changes, and so the fix is visible at the point that
+    // actually matters.
+    private static string SanitizeForLog(string value) => value.Replace('\r', '_').Replace('\n', '_');
+
     // Full exception detail (WMI error codes, Sophos's raw error text, internal
     // hostnames/ports from HttpRequestException) goes to the server log only —
     // callers, even ones holding a valid but narrowly-scoped API key, get a
@@ -227,7 +236,7 @@ public static class RecordEndpoints
     {
         logger.LogError(
             "Background task queue full — dropping Sophos {Operation} for {Hostname} on rule {RuleName}",
-            operation, hostname, ruleName);
+            operation, SanitizeForLog(hostname), ruleName);
         return Results.Problem(
             "Le service est temporairement surchargé, réessayez plus tard.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
